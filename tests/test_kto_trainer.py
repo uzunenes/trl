@@ -1263,6 +1263,34 @@ class TestKTOTrainer(TrlTestCase):
             new_param = trainer.model.get_parameter(n)
             assert not torch.equal(param, new_param), f"Parameter {n} has not changed."
 
+    def test_train_generation_prompt_not_prefix(self):
+        # Like the Gemma 4 12B/26B/31B template: the generation prompt opens the assistant turn with an empty thought
+        # block that the rendered assistant turn doesn't have, so the tokenized prompt is not a prefix of the tokenized
+        # prompt+completion (#7449)
+        tokenizer = AutoTokenizer.from_pretrained("trl-internal-testing/tiny-Qwen2ForCausalLM-2.5")
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' }}{% endif %}"
+        )
+        dataset = load_dataset("trl-internal-testing/zen", "conversational_unpaired_preference", split="train")
+
+        training_args = KTOConfig(output_dir=self.tmp_dir, report_to="none")
+        trainer = KTOTrainer(
+            model="trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+            args=training_args,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+        )
+
+        for example, processed in zip(dataset, trainer.train_dataset, strict=True):
+            text = tokenizer.apply_chat_template(example["prompt"] + example["completion"], tokenize=False)
+            # The sequence is the full conversation, and the completion is the whole assistant turn
+            completion = tokenizer.decode(processed["completion_ids"])
+            assert tokenizer.decode(processed["prompt_ids"]) + completion == text
+            assert completion == example["completion"][0]["content"] + "<|im_end|>\n"
+
     def test_train_with_chat_template_kwargs(self):
         dataset = load_dataset("trl-internal-testing/zen", "conversational_preference", split="train")
 
